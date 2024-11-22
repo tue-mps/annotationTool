@@ -149,7 +149,8 @@ class LabelEditor(QtWidgets.QWidget):
                 self.display_sample(P2,V2C, points, image, labels, label_names)
             
         except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Error", f"Failed to load sample: {e}")
+            #QtWidgets.QMessageBox.warning(self, "Error", f"Failed to load sample: {e}")
+            print(self, "Error", f"Failed to load sample: {e}")
 
     def display_sample(self, P2,V2C, points, image, labels, label_names ):
         """Displays the current sample in the viewer."""
@@ -353,8 +354,8 @@ class LabelEditor(QtWidgets.QWidget):
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
-    dataset_path = "/app/dataForViewing/training"
-    label_path = "/app/dataForViewing/training/labels_2"
+    dataset_path = "/home/eorozco/annotationTool/dataForViewing/dataset1"
+    label_path = "/home/eorozco/annotationTool/dataForViewing/dataset1/labels_2"
     editor = LabelEditor(dataset_path, label_path)
     editor.show()
     sys.exit(app.exec_())

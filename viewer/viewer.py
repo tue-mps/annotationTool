@@ -433,7 +433,7 @@ class Viewer:
             self.vi.show(self.actors+self.actors_without_del, resetcam=False,  camera={'pos': (35,0,80), 'focalPoint': (35,0,0 ),'viewup': (1, 0, 0),'parallelScale': 30, 'parallelProjection': True}, interactive=False, title="Bird's Eye View")# added interactive=False for non-blocking reproduction  
             self.first_show = False
         else:
-            self.vi.show(self.actors + self.actors_without_del, resetcam=False,axes=1)
+            self.vi.show(self.actors + self.actors_without_del, resetcam=False)
             
             
             

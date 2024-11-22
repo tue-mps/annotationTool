@@ -7,14 +7,16 @@ class KittiDetectionDataset:
     def __init__(self,root_path,label_path = None):
         self.root_path = root_path
         self.velo_path = os.path.join(self.root_path,"velodyne")
-        self.image_path = os.path.join(self.root_path,"image_2")
+        self.image_path = os.path.join(self.root_path,"Image_2")
         self.calib_path = os.path.join(self.root_path,"calib")
         if label_path is None:
-            self.label_path = os.path.join(self.root_path, "label_2")
+            self.label_path = os.path.join(self.root_path, "labels_2")
         else:
             self.label_path = label_path
 
-        self.all_ids = os.listdir(self.velo_path)
+        #self.all_ids = os.listdir(self.label_path)
+        self.all_ids = sorted(os.listdir(self.label_path))
+
 
     def __len__(self):
         return len(self.all_ids)
