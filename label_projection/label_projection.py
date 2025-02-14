@@ -6,26 +6,46 @@ import cv2
 from sklearn.cluster import DBSCAN
 from os import walk
 import re
+import open3d as o3d
+from scipy.spatial.transform import Rotation as R
 
 # Calibration params
 CAMERA_MATRIX = np.array([[1.84541929e+03, 0.0, 8.55802458e+02], [0.0, 1.78869210e+03, 6.07342667e+02], [0.0, 0.0, 1.0]]) 
 DISTORTION_COEFFICIENTS = np.array([ 2.51771602e-01, -1.32561698e+01,  4.33607564e-03, -6.94637533e-03, 5.95513933e+01])    
 CAMERA_TO_LIDAR_ROTATION = np.array([1.61803058,  0.03365624, -0.04003127])
 CAMERA_TO_LIDAR_TRANSLATION = np.array([0.09138029, 1.38369885, 1.43674736])
-RADAR_TO_LIDAR_ROTATION = np.array([0.0, 0.0, 0.0]) # Dummy for now
-RADAR_TO_LIDAR_TRANSLATION = np.array([0.0, 0.0, 0.0]) # Dummy for now
 
+# Whether to visualize radar point cloud (true) or lidar point cloud (false)
+PROJECT_ON_RADAR = False
+
+# The maximum elevation angle caught by radar
+RADAR_MAX_ELEVATION_DEGREES = 12
 
 # Data location   
 IMAGES_DIR = "/home/danil/RADIalHD/Radial_imagesHD"
 LABELS_DIR = "/home/danil/RADIalHD/Radial_imagesHD_labels"
 LASER_PCL_DIR = "/home/danil/data/RADIal/laser_PCL"
+RADAR_PCL_DIR = "/home/danil/data/RADIal/radar_PCL"
+PREDICTED_LABELS_DIR = "/home/danil/data/RADIal/predicted_labels"
 OUTPUT_IMAGES_DIR = "/home/danil/data/RADIal/projected_labels"
 OUTPUT_LABELS_DIR = "/home/danil/data/RADIal/labelled_range_azimuth"
 
 
 COLORS_ARRAY = np.array(['pink', 'red', 'green', 'blue', 'purple', 'orange'])
 
+def rotation2d(xyz,roll,yaw,pitch):
+    
+    pitch = np.radians(pitch)
+    yaw = np.radians(yaw)
+    roll = np.radians(roll)
+    
+    #xyz = np.hstack([xy,np.zeros( (len(xy),1))])
+    
+    rotation_vector = np.array([roll,pitch,yaw])
+    rotation = R.from_rotvec(rotation_vector)
+    rotated_vec = rotation.apply(xyz)
+    
+    return rotated_vec[:,:3]
 
 def pcl_to_range_azimuth(point_cloud):
     # Convert to polar coordinates (range and azimuth)
@@ -87,10 +107,106 @@ def cluster_pc(pc, num_labels, eps = 0.2, ingore_z = False):
             if cluster_label != label_with_max_points:
                 pc[labelled_indicies[j],3] = -1 # Remove label 
 
-    return pc                                 
+    return pc  
+
+def cluster_pc_with_region_growing(original_pc, num_labels, eps = 0.2):
+
+    for i in range(0, num_labels): 
+
+        marked_pc = original_pc[original_pc[:,3] == i]
+        pc = np.transpose(np.array([marked_pc[:,0], marked_pc[:,1], marked_pc[:,2]]))
+
+        # Convert the NumPy array to an Open3D PointCloud object
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(pc)
+
+        # Estimate normals
+        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=30))
+
+        # Access the computed normals
+        normals = np.asarray(pcd.normals)    
+
+        # Define parameters for region growing
+        distance_threshold = eps  # Maximum distance between neighbors
+        angle_threshold = np.pi / 8  # Maximum angle (in radians) between normals
+        curvature_threshold = 0.1  # Curvature threshold (optional)
+
+        # Compute curvatures (optional)
+        # Note: Open3D does not directly compute curvature; here is a simple approximation
+        kd_tree = o3d.geometry.KDTreeFlann(pcd)
+        curvatures = np.zeros(len(pc))
+        for i, point in enumerate(pc):
+            [_, idx, _] = kd_tree.search_radius_vector_3d(point, radius=0.05)
+            neighbors = pc[idx, :]
+            # Ensure enough neighbors to compute covariance
+            if len(neighbors) < 3:  # At least 3 points needed to compute a 2D covariance matrix
+                curvatures[i] = 0  # Assign default curvature for isolated points
+                continue
+
+            # Compute covariance matrix of neighbors
+            covariance_matrix = np.cov(neighbors - neighbors.mean(axis=0), rowvar=False)
+            
+            # Check if covariance_matrix is valid
+            if covariance_matrix.shape != (3, 3):  # Ensure it's a 3x3 matrix
+                curvatures[i] = 0  # Assign default curvature
+                continue
+
+            # Compute eigenvalues
+            eigenvalues, _ = np.linalg.eigh(covariance_matrix)
+            curvatures[i] = eigenvalues.min() / eigenvalues.sum()  # Curvature as a ratio of smallest eigenvalue
+
+        # Initialize clustering
+        visited = np.zeros(len(pc), dtype=bool)
+        clusters = []
+
+        # Run region growing
+        for i in range(len(pc)):
+            if not visited[i]:
+                cluster = []
+                queue = [i]
+                visited[i] = True
+
+                while queue:
+                    current_idx = queue.pop(0)
+                    cluster.append(current_idx)
+
+                    # Find neighbors of the current point
+                    [_, neighbor_indices, _] = kd_tree.search_radius_vector_3d(pc[current_idx], distance_threshold)
+                    for neighbor_idx in neighbor_indices:
+                        if not visited[neighbor_idx]:
+                            # Check normal angle criterion
+                            normal_angle = np.arccos(np.clip(np.dot(normals[current_idx], normals[neighbor_idx]), -1.0, 1.0))
+                            if normal_angle < angle_threshold:
+                                # Check curvature criterion (optional)
+                                if curvatures[neighbor_idx] < curvature_threshold:
+                                    queue.append(neighbor_idx)
+                                    visited[neighbor_idx] = True
+
+                if len(cluster) > 10:  # Minimum cluster size
+                    clusters.append(cluster) 
+
+        # Choose cluster
+        max_cluster = None
+        for cluster in clusters:
+            print("Cluster ", len(cluster))  
+            if max_cluster == None or len(cluster) > len(max_cluster):
+                max_cluster = cluster
+
+        if max_cluster == None:
+            print("Could not cluster for label", i, ", skipping to the next label")
+            continue          
+
+        for index, e in enumerate(marked_pc):
+            if index not in max_cluster:
+                marked_pc[index,3] = -1      
+
+        filter_out_labels = original_pc[:,3] != i
+        original_pc = np.concatenate((original_pc[filter_out_labels], marked_pc), axis=0)  
+
+    return original_pc                                                               
 
 def get_sample_pc(id):       
-    filename = os.path.join(LASER_PCL_DIR, "pcl_{:s}.npy".format(id))
+    filename = os.path.join(RADAR_PCL_DIR if PROJECT_ON_RADAR else LASER_PCL_DIR, "pcl_{:s}.npy".format(id))
     return np.load(filename,allow_pickle=True)  
 
 def read_lables(width, height, id):
@@ -101,19 +217,26 @@ def read_lables(width, height, id):
     if len(labels_data.shape) == 1:
         labels_data = np.array([labels_data])
     print("Labels: ", labels_data)
-    labels = np.empty([len(labels_data), 4], dtype=int) 
-    for index, label in enumerate(labels_data):
+    labels = []
+    for i, label in enumerate(labels_data):
         center_x = width * label[1]
         center_y = height * label[2]
         label_width = width * label[3]
         label_height = height * label[4]
+
+        # For poles, skip wide labels as they are most probably irrelevant
+        if label_width > label_height:
+            continue
+
         box = [int(center_x - label_width/2), int(center_y - label_height/2), int(center_x + label_width/2), int(center_y + label_height/2)]
-        labels[index] = box
-    return labels    
+        labels.append(box)
+        
+    print(labels)    
+    return np.array(labels)    
 
 def label_point_cloud(pc, points_2d, labels):
     """
-    Labels point cloud (pc) by checking the corresponding prohected points (points_2d) to be inside the bounding box specified by each label
+    Labels point cloud (pc) by checking the corresponding projected points (points_2d) to be inside the bounding box specified by each label
     """    
     count_marked = 0
 
@@ -185,11 +308,11 @@ def save_range_azimuth(pc, num_labels, id):
 
     f.close()  
 
-def save_image(image, labels, pc, width, height, id):
+def save_image(image, labels, points_2d, markers, width, height, id):
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)      
 
     # Add markers to 2D points
-    image_points = np.hstack((points_2d, pc[:,3].reshape(-1, 1)))
+    image_points = np.hstack((points_2d, markers.reshape(-1, 1)))
     print("Labelled points:", len(image_points[image_points[:,2] >= 0]))
     # Consider only points in the image
     filter = (image_points[:, 0] >= 0) & (image_points[:, 0] <= width) & (image_points[:, 1] >= 0) & (image_points[:, 1] <= height)
@@ -230,76 +353,166 @@ def save_image(image, labels, pc, width, height, id):
     plt.savefig(os.path.join(OUTPUT_IMAGES_DIR, "{:s}.jpg".format(id)), format='jpg', dpi=200, bbox_inches='tight', pad_inches=0)
 
 
-image_files = []
-label_files = []
+# Converts range and azimuth to x,y,z.
+# Here, z in the maximum elevation that potentially can be caught by radar for such range 
+def range_azimuth_to_3d(ra):
+    az = np.deg2rad(ra[:,1] + 90) # Do a reversed conversion, see pcl_to_range_azimuth()
+    x = ra[:,0] * np.cos(az)
+    y = ra[:,0] * np.sin(az)
+    z = ra[:,0] * np.sin(np.deg2rad(RADAR_MAX_ELEVATION_DEGREES))
+    return np.stack([x,y,z],axis=1)
 
-for (dirpath, dirnames, filenames) in walk(IMAGES_DIR):
-    image_files.extend(filenames)
-    break
-print("Found", len(image_files), "images")
+def process_labeled_images():
+    image_files = []
+    label_files = []
 
-for (dirpath, dirnames, filenames) in walk(LABELS_DIR):
-    label_files.extend(filenames)
-    break
-print("Found", len(label_files), "labels")
+    for (dirpath, dirnames, filenames) in walk(IMAGES_DIR):
+        image_files.extend(filenames)
+        break
+    print("Found", len(image_files), "images")
 
-for image_file in image_files:
-    id = re.search("\d+", image_file).group()
+    for (dirpath, dirnames, filenames) in walk(LABELS_DIR):
+        label_files.extend(filenames)
+        break
+    print("Found", len(label_files), "labels")
 
-    if id != "014016":
-        continue
+    for image_file in image_files:
+        id = re.search("\d+", image_file).group()
 
-    pc = get_sample_pc(id)
-    if len(pc) == 0:
-        print("Could not extract PC for sample", id)
-        continue
+        if id != "000018":
+            continue
 
-    print("Initial PC: ", pc.shape)   
-    
-    # Keep only x,y,z
-    pc = pc[:,[0,1,2]]
-    # Transform lidar PC from the RADIal sane way as they do
-    pc[:,[0, 1, 2]] = pc[:,[1, 0,2]] # Swap the order
-    pc[:,0]*=-1 # Left is positive
+        pc = get_sample_pc(id)
+        if len(pc) == 0:
+            print("Could not extract PC for sample", id)
+            continue
 
-    # marker for the labels. '-1' means the point does not belong to any label 
-    no_labels = -1 * np.ones((pc.shape[0], 1))              
-    pc = np.hstack((pc, no_labels))
-    print("PC shape after modification: ", pc.shape)
-    
-    # Get 2D points from the point cloud to project onto the image
-    points_2d,_ = cv2.projectPoints(np.array(pc[:,:3]), 
-                                    CAMERA_TO_LIDAR_ROTATION, 
-                                    CAMERA_TO_LIDAR_TRANSLATION,
-                                    CAMERA_MATRIX,
-                                    DISTORTION_COEFFICIENTS)
+        print("Initial PC: ", pc.shape)   
 
-    points_2d = points_2d.squeeze(1).astype('int')
-    print("2D points:", points_2d.shape)
+        if PROJECT_ON_RADAR:
+            pc = np.stack([pc[5], pc[6], pc[7] + 0.7], axis=1)
+            pc = rotation2d(pc,0,0,-2)
+            x = -pc[:,1] # lateral
+            y = pc[:,0] # longi
+            z = pc[:,2] # longi
+            pc = np.stack([x,y,z],axis=1)
 
-    # Get the image and labels   
+        else:      
+            # Keep only x,y,z
+            pc = pc[:,[0,1,2]]
+            # Transform lidar PC from the RADIal sane way as they do
+            pc[:,[0, 1, 2]] = pc[:,[1, 0,2]] # Swap the order
+            pc[:,0]*=-1 # Left is positive
 
-    image = cv2.imread(os.path.join(IMAGES_DIR, image_file)) 
-    width = image.shape[1]
-    height = image.shape[0]
+        # marker for the labels. '-1' means the point does not belong to any label 
+        no_labels = -1 * np.ones((pc.shape[0], 1))              
+        pc = np.hstack((pc, no_labels))
+        print("PC shape after modification: ", pc.shape)
+        
+        # Get 2D points from the point cloud to project onto the image
+        points_2d,_ = cv2.projectPoints(np.array(pc[:,:3]), 
+                                        CAMERA_TO_LIDAR_ROTATION, 
+                                        CAMERA_TO_LIDAR_TRANSLATION,
+                                        CAMERA_MATRIX,
+                                        DISTORTION_COEFFICIENTS)
 
-    print("Image size:", width, "x", height)
-    labels = read_lables(width, height, id)
+        points_2d = points_2d.squeeze(1).astype('int')
+        print("2D points:", points_2d.shape)
 
-    if labels.size == 0:
-        print("No labels found for sample", id)
-        continue
+        # Get the image and labels   
 
-    print("Original PC shape:", pc.shape)
-    pc = label_point_cloud(pc, points_2d, labels)  
-    print("Labelled PC shape:", pc.shape)
-    pc = cluster_pc(pc, len(labels), eps=0.35, ingore_z=True)   
-    print("Clustered PC shape:", pc.shape)
+        image = cv2.imread(os.path.join(IMAGES_DIR, image_file)) 
+        width = image.shape[1]
+        height = image.shape[0]
 
-    save_image(image, labels, pc, width, height, id)
-    #save_range_azimuth(pc, len(labels), id)
-    #show_range_azimuth(pc, len(labels), id)
+        print("Image size:", width, "x", height)
+        labels = read_lables(width, height, id)
+
+        if labels.size == 0:
+            print("No labels found for sample", id)
+            continue
+
+        print("Original PC shape:", pc.shape)
+        pc = label_point_cloud(pc, points_2d, labels)  
+        print("Labelled PC shape:", pc.shape)
+        pc = cluster_pc(pc, len(labels), eps=0.4, ingore_z=True)   
+        #pc = cluster_pc_with_region_growing(pc, len(labels), eps=0.2)  
+        print("Clustered PC shape:", pc.shape)
+
+        save_image(image, labels, points_2d, pc[:,3], width, height, id)
+        save_range_azimuth(pc, len(labels), id)
+        show_range_azimuth(pc, len(labels), id)
+
+
+def project_predicted_labels():
+    label_files = []
+
+    for (dirpath, dirnames, filenames) in walk(PREDICTED_LABELS_DIR):
+        label_files.extend(filenames)
+        break
+    print("Found", len(label_files), "labels")
+
+    for label_file in label_files:
+        id = re.search("\d+", label_file).group()
+        points_3d = range_azimuth_to_3d(np.loadtxt(os.path.join(PREDICTED_LABELS_DIR, label_file)))
+        print("3D points:", points_3d.shape)  
+
+        image = cv2.imread(os.path.join(IMAGES_DIR, "image_{:s}.jpg".format(id))) 
+        width = image.shape[1]
+        height = image.shape[0]
+
+        # Get 2D points from the point cloud to project onto the image
+        points_2d,_ = cv2.projectPoints(points_3d, 
+                                        CAMERA_TO_LIDAR_ROTATION, 
+                                        CAMERA_TO_LIDAR_TRANSLATION,
+                                        CAMERA_MATRIX,
+                                        DISTORTION_COEFFICIENTS)
+
+        points_3d_no_elevation =  points_3d.copy()
+        points_3d_no_elevation[:,2] = 0                             
+
+        points_2d = points_2d.squeeze(1).astype('int')
+        print("2D points:", points_2d.shape)
+
+        points_2d_no_elevation,_ = cv2.projectPoints(points_3d_no_elevation, 
+                                        CAMERA_TO_LIDAR_ROTATION, 
+                                        CAMERA_TO_LIDAR_TRANSLATION,
+                                        CAMERA_MATRIX,
+                                        DISTORTION_COEFFICIENTS)
+        points_2d_no_elevation = points_2d_no_elevation.squeeze(1).astype('int')                               
+        print("2D points (no elevation):", points_2d_no_elevation.shape)
+
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)      
+
+        # Define DPI (dots per inch)
+        dpi = 100  # Common screen DPI; adjust as needed
+
+        # Compute figure size in inches
+        figsize = (width / dpi, height / dpi)
+
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        ax.imshow(image)
+
+        # Hide axes
+        ax.axis("off")
+
+        #plt.show(block=True)
+
+        for i, point in enumerate(points_2d):
+            if point[0] > 0 and point[0] < width and point[1] > 0 and point[1] < height:
+                ground_point = points_2d_no_elevation[i,:]
+                ground_x = ground_point[0] if ground_point[0] < width else width - 1
+                ground_y = ground_point[1] if ground_point[1] < height else height - 1
+                ax.plot([point[0], ground_x], [point[1], ground_y], color='green', linewidth=1, linestyle='-', alpha=0.4)
+
+        plt.savefig(os.path.join(OUTPUT_IMAGES_DIR, "{:s}_.jpg".format(id)), format='jpg', dpi=200, bbox_inches='tight', pad_inches=0)
    
+
+
+# Main program
+#process_labeled_images()    
+project_predicted_labels() 
+
   
     
 
