@@ -293,6 +293,24 @@ def show_range_azimuth(pc, num_labels, id):
     plt.title("Sample {:s}".format(id))
     plt.show()   
 
+def show_predicted_range_azimuth(ra, id):
+
+    az = ra[:,1]
+    r = ra[:,0]
+
+    # Visualize the point cloud in a polar plot
+  
+    fig, ax = plt.subplots(figsize=(20, 20), subplot_kw={'projection': 'polar'})
+
+    ax.set_thetamax(180)  
+    ax.set_thetamin(0)
+    
+    ax.scatter(az, r, c='black', s=1)
+
+    # Plot the selected region as a red mark
+    plt.title("Sample {:s}".format(id))
+    plt.show()     
+
 def save_range_azimuth(pc, num_labels, id):
     f = open(os.path.join(OUTPUT_LABELS_DIR, "{:s}.txt".format(id)), "w")
     ra = pcl_to_range_azimuth(pc)
@@ -454,7 +472,9 @@ def project_predicted_labels():
 
     for label_file in label_files:
         id = re.search("\d+", label_file).group()
-        points_3d = range_azimuth_to_3d(np.loadtxt(os.path.join(PREDICTED_LABELS_DIR, label_file)))
+        ra = np.loadtxt(os.path.join(PREDICTED_LABELS_DIR, label_file))
+        show_predicted_range_azimuth(ra, id)
+        points_3d = range_azimuth_to_3d(ra)
         print("3D points:", points_3d.shape)  
 
         image = cv2.imread(os.path.join(IMAGES_DIR, "image_{:s}.jpg".format(id))) 
