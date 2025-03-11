@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from matplotlib.path import Path
 import os
 import numpy as np
 import cv2
@@ -32,6 +33,9 @@ OUTPUT_LABELS_DIR = "/home/danil/data/RADIal/labelled_range_azimuth"
 
 
 COLORS_ARRAY = np.array(['pink', 'red', 'green', 'blue', 'purple', 'orange'])
+
+def belongs_to_polygon(polygon: np.array, point):
+    return Path(polygon).contains_point(point)
 
 def rotation2d(xyz,roll,yaw,pitch):
     
@@ -381,6 +385,26 @@ def range_azimuth_to_3d(ra):
     z = ra[:,0] * np.sin(np.deg2rad(RADAR_MAX_ELEVATION_DEGREES))
     return np.stack([x,y,z],axis=1)
 
+# There are 11 parameters per point described sctructured as follow:
+# [X, Y, Z, intensity, radialDistance, elevation_Angle, azimuth_angle, layer_index]
+# Here is the trick, the Laser Scanner has 2 mirrors, one even and one odd. 
+# There is a slight elevation angle difference between the 2 mirrors, so we have to compensate that angle
+def compensate_layer_angle(pcl, index, sensor_height):
+    
+    offset=0
+    if(index%2==0):
+        offset = np.deg2rad(.6)
+
+    x = pcl[:,4] * np.cos(pcl[:,5]+offset) * np.cos(pcl[:,6])
+    y = pcl[:,4] * np.cos(pcl[:,5]+offset) * np.sin(pcl[:,6])
+    z = pcl[:,4] * np.sin(pcl[:,5]+offset) + sensor_height
+    
+    pcl[:,0] = x
+    pcl[:,1] = y
+    pcl[:,2] = z
+    
+    return pcl
+
 def process_labeled_images():
     image_files = []
     label_files = []
@@ -398,10 +422,11 @@ def process_labeled_images():
     for image_file in image_files:
         id = re.search("\d+", image_file).group()
 
-        if id != "000347":
+        if id != "000863":
             continue
 
         pc = get_sample_pc(id)
+        print("PC point:", pc[0,:])
         if len(pc) == 0:
             print("Could not extract PC for sample", id)
             continue
@@ -418,18 +443,15 @@ def process_labeled_images():
 
         else:      
             # Keep only x,y,z
-            pc = pc[:,[0,1,2]]
+            pc = compensate_layer_angle(pc, 0, 0.42)[:,:3]
+            
             # Transform lidar PC from the RADIal sane way as they do
             pc[:,[0, 1, 2]] = pc[:,[1, 0,2]] # Swap the order
-            pc[:,0]*=-1 # Left is positive
-
-        # marker for the labels. '-1' means the point does not belong to any label 
-        no_labels = -1 * np.ones((pc.shape[0], 1))              
-        pc = np.hstack((pc, no_labels))
-        print("PC shape after modification: ", pc.shape)
+            pc[:,0]*=-1 # Left is positive           
         
+        print("PC point:", pc[0,:])
         # Get 2D points from the point cloud to project onto the image
-        points_2d,_ = cv2.projectPoints(np.array(pc[:,:3]), 
+        points_2d,_ = cv2.projectPoints(np.array(pc), 
                                         CAMERA_TO_LIDAR_ROTATION, 
                                         CAMERA_TO_LIDAR_TRANSLATION,
                                         CAMERA_MATRIX,
@@ -452,14 +474,20 @@ def process_labeled_images():
             continue
 
         print("Original PC shape:", pc.shape)
+
+        # marker for the labels. '-1' means the point does not belong to any label 
+        no_labels = -1 * np.ones((pc.shape[0], 1))   
+        pc = np.hstack((pc[:,[0,1,2]], no_labels))
+        print("PC shape before labelling: ", pc.shape)
+
         pc = label_point_cloud(pc, points_2d, labels)  
         print("Labelled PC shape:", pc.shape)
-        pc = cluster_pc(pc, len(labels), eps=0.4, ingore_z=True)   
+        pc = cluster_pc(pc, len(labels), eps=0.2, ingore_z=True)   
         #pc = cluster_pc_with_region_growing(pc, len(labels), eps=0.2)  
         print("Clustered PC shape:", pc.shape)
 
         save_image(image, labels, points_2d, pc[:,3], width, height, id)
-        #save_range_azimuth(pc, len(labels), id)
+        save_range_azimuth(pc, len(labels), id)
         show_range_azimuth(pc, len(labels), id)
 
 
