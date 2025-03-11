@@ -47,7 +47,7 @@ def rotation2d(xyz,roll,yaw,pitch):
     
     return rotated_vec[:,:3]
 
-def pcl_to_range_azimuth(point_cloud):
+def pcl_to_range_azimuth(point_cloud, with_conversion):
     # Convert to polar coordinates (range and azimuth)
     ranges = np.sqrt(point_cloud[:, 0]**2 + point_cloud[:, 1]**2)  # Range
     azimuths = np.arctan2(point_cloud[:, 1], point_cloud[:, 0]) # Azimuth in degrees
@@ -57,7 +57,8 @@ def pcl_to_range_azimuth(point_cloud):
     #azimuths = (azimuths + 360) % 360
 
     # Convert to degrees, front is 0, left-hand are positive values, and right-hand are negative
-    azimuths = np.rad2deg(azimuths) - 90
+    if with_conversion:
+        azimuths = np.rad2deg(azimuths) - 90
 
     # Create a 2D array with each point's range and azimuth
     range_azimuth_array = np.column_stack((ranges, azimuths, markers))
@@ -252,7 +253,7 @@ def label_point_cloud(pc, points_2d, labels):
     return pc    
 
 def show_range_azimuth(pc, num_labels, id):
-    ra = pcl_to_range_azimuth(pc)
+    ra = pcl_to_range_azimuth(pc, False)
     print("Range-Azimuth", ra.shape)
 
     # As a maximum range, take the furthest labelled point
@@ -313,7 +314,7 @@ def show_predicted_range_azimuth(ra, id):
 
 def save_range_azimuth(pc, num_labels, id):
     f = open(os.path.join(OUTPUT_LABELS_DIR, "{:s}.txt".format(id)), "w")
-    ra = pcl_to_range_azimuth(pc)
+    ra = pcl_to_range_azimuth(pc, True)
     print("Range-Azimuth", ra.shape)
 
     for i in range(0, num_labels):
@@ -397,7 +398,7 @@ def process_labeled_images():
     for image_file in image_files:
         id = re.search("\d+", image_file).group()
 
-        if id != "000018":
+        if id != "000347":
             continue
 
         pc = get_sample_pc(id)
@@ -458,7 +459,7 @@ def process_labeled_images():
         print("Clustered PC shape:", pc.shape)
 
         save_image(image, labels, points_2d, pc[:,3], width, height, id)
-        save_range_azimuth(pc, len(labels), id)
+        #save_range_azimuth(pc, len(labels), id)
         show_range_azimuth(pc, len(labels), id)
 
 
@@ -530,8 +531,8 @@ def project_predicted_labels():
 
 
 # Main program
-#process_labeled_images()    
-project_predicted_labels() 
+process_labeled_images()    
+#project_predicted_labels() 
 
   
     
