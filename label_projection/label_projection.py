@@ -22,9 +22,20 @@ PROJECT_ON_RADAR = False
 # The maximum elevation angle caught by radar
 RADAR_MAX_ELEVATION_DEGREES = 12
 
+# Whether to use polygon-shaped labels instead of rectangular bounding boxes
+USE_POLYGON_LABLES = False
+
+# When set to True, a biggest cluster is taken as a pole when doing clustering.
+# Otherwise, the closest cluster is taken (with the smallest range) after which there is no higher cluster
+USE_BIGGEST_CLUSTER = False
+
+# Minumum height to be considered for the pole detection
+MINIMUM_POLE_HEIGHT = 0.5
+
 # Data location   
 IMAGES_DIR = "/home/danil/RADIalHD/Radial_imagesHD"
 LABELS_DIR = "/home/danil/RADIalHD/Radial_imagesHD_labels"
+POLYGON_LABELS_DIR = "/home/danil/data/testFolder_labels_polygons"
 LASER_PCL_DIR = "/home/danil/data/RADIal/laser_PCL"
 RADAR_PCL_DIR = "/home/danil/data/RADIal/radar_PCL"
 PREDICTED_LABELS_DIR = "/home/danil/data/RADIal/predicted_labels"
@@ -79,14 +90,14 @@ def cluster_pc(pc, num_labels, eps = 0.2, ingore_z = False):
             print("No points for the label ", label_index)
             continue
 
-        print("Clustering points for label", label_index)
+        print(" ------- Clustering points for label", label_index)
         clustering = None
         if ingore_z:
             points_2d = labelled_points[:,[0,1]]
             print("Points 2D:", points_2d.shape)
-            clustering = DBSCAN(eps=eps, min_samples=1).fit(points_2d)
+            clustering = DBSCAN(eps=eps, min_samples=2).fit(points_2d)
         else:    
-            clustering = DBSCAN(eps=eps, min_samples=1).fit(labelled_points)
+            clustering = DBSCAN(eps=eps, min_samples=2).fit(labelled_points)
         cluster_labels = clustering.labels_
         
         print("Labels:", cluster_labels.shape)
@@ -97,20 +108,92 @@ def cluster_pc(pc, num_labels, eps = 0.2, ingore_z = False):
 
         print("Label max: ", label_max)
 
-        label_with_max_points = 0
-        max_num_points = 0
+        if USE_BIGGEST_CLUSTER:
 
-        for i in range(0, label_max + 1):
-            num_points = len(cluster_labels[cluster_labels[:] == i])
-            if (num_points > max_num_points):
-                max_num_points = num_points
-                label_with_max_points = i
+            label_with_max_points = 0
+            max_num_points = 0
 
-        print("The biggest cluster has ", max_num_points, " points")  
+            for i in range(0, label_max + 1):
+                num_points = len(cluster_labels[cluster_labels[:] == i])
+                if (num_points > max_num_points):
+                    max_num_points = num_points
+                    label_with_max_points = i
 
-        for j, cluster_label in enumerate(cluster_labels):
-            if cluster_label != label_with_max_points:
-                pc[labelled_indicies[j],3] = -1 # Remove label 
+            print("The biggest cluster has ", max_num_points, " points")  
+
+            for j, cluster_label in enumerate(cluster_labels):
+                if cluster_label != label_with_max_points:
+                    pc[labelled_indicies[j],3] = -1 # Remove label 
+
+        else:
+
+            cluster_average_ranges = []
+            cluster_heights = []
+            cluster_sizes = []
+
+            for i in range(0, label_max + 1):
+                indicies = np.where(cluster_labels == i)[0]
+                cumulative_range = 0.0
+                min_height = 1000.0
+                max_height = -1000.0
+                for index in indicies:
+                    point = labelled_points[index]
+                    r = np.sqrt(point[0]**2 + point[1]**2)
+                    cumulative_range += r
+                    if point[2] < min_height:
+                        min_height = point[2]
+                    if point[2] > max_height:
+                        max_height = point[2]
+
+                cluster_size = len(indicies)
+                cluster_average_ranges.append(cumulative_range/cluster_size)
+                cluster_heights.append(max_height - min_height)
+                cluster_sizes.append(cluster_size)
+
+            best_cluster_index = 0
+            closest_cluster_index = 0
+            tallest_cluster_index = 0
+            biggest_cluster_index = 0
+            heaviest_cluster_index = 0
+
+            min_range = min(cluster_average_ranges)
+            max_height = max(cluster_heights)
+            max_size = max(cluster_sizes)
+            max_weight = 0
+
+            for i, r in enumerate(cluster_average_ranges):
+                h = cluster_heights[i]
+                s = cluster_sizes[i]
+                w = (h*s)/r
+                if r == min_range:
+                    closest_cluster_index = i
+                if h == max_height:
+                    tallest_cluster_index = i
+                if s == max_size:
+                    biggest_cluster_index = i  
+                if w > max_weight:
+                    max_weight = w
+                    heaviest_cluster_index = i     
+                print("Cluster ", i, ": range =", r, ", height =", h, ", size =", s, ", weight =", w)
+
+            print("Nearest cluster:", closest_cluster_index, ", tallest cluster:", tallest_cluster_index, ", biggest cluster:", biggest_cluster_index, ", heaviest cluster:", heaviest_cluster_index)
+
+            
+            # if tallest_cluster_index == biggest_cluster_index:
+            #     # (1) The biggest and tallest cluster is the firsts good candidate
+            #     best_cluster_index = biggest_cluster_index    
+            # else:
+            #     # (2) If no such cluster, consider the cluster with the highest weight
+            #     best_cluster_index = heaviest_cluster_index
+
+            best_cluster_index = heaviest_cluster_index    
+
+            print("Chose the best cluster:", best_cluster_index)    
+
+            for j, cluster_label in enumerate(cluster_labels):
+                if cluster_label != best_cluster_index:
+                    pc[labelled_indicies[j],3] = -1 # Remove label    
+
 
     return pc  
 
@@ -235,9 +318,25 @@ def read_lables(width, height, id):
 
         box = [int(center_x - label_width/2), int(center_y - label_height/2), int(center_x + label_width/2), int(center_y + label_height/2)]
         labels.append(box)
-        
-    print(labels)    
+    
     return np.array(labels)    
+
+def read_polygon_labels(width, height, id):
+    filename = os.path.join(POLYGON_LABELS_DIR, "image_{:s}.txt".format(id))  
+    labels_data = np.genfromtxt(filename, dtype=object, delimiter="\n")
+    labels = [list(map(float, row.split()[1:])) for row in labels_data]    
+
+    # Convert labels from normalized to pixels
+    for i, label in enumerate(labels):
+        for j, point in enumerate(label):
+            labels[i][j] = point * width if i%2 == 0 else point * height
+
+    # Convert each row into a list of (x, y) points
+    polygons = [np.array(row).reshape(-1, 2) for row in labels if len(row) % 2 == 0]
+    # Convert each polygon into a Path object
+    paths = [Path(polygon) for polygon in polygons]        
+    return paths       
+
 
 def label_point_cloud(pc, points_2d, labels):
     """
@@ -255,6 +354,21 @@ def label_point_cloud(pc, points_2d, labels):
 
     print(count_marked, "points are inside the labelled windows") 
     return pc    
+
+def label_point_cloud_for_polygons(pc, points_2d, polygons):
+    """
+    Labels point cloud (pc) by checking the corresponding projected points (points_2d) to be inside the specified polygon
+    """    
+    count_marked = 0
+
+    for index, e in enumerate(points_2d): 
+        for label_index, path in enumerate(polygons):
+            if (path.contains_point(e)):
+                pc[index, 3] = label_index  
+                count_marked += 1
+
+    print(count_marked, "points are inside the labelled windows") 
+    return pc       
 
 def show_range_azimuth(pc, num_labels, id):
     ra = pcl_to_range_azimuth(pc, False)
@@ -376,6 +490,50 @@ def save_image(image, labels, points_2d, markers, width, height, id):
     plt.savefig(os.path.join(OUTPUT_IMAGES_DIR, "{:s}.jpg".format(id)), format='jpg', dpi=200, bbox_inches='tight', pad_inches=0)
 
 
+def save_image_with_polygons(image, paths, points_2d, markers, width, height, id):
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)      
+
+    # Add markers to 2D points
+    image_points = np.hstack((points_2d, markers.reshape(-1, 1)))
+    print("Labelled points:", len(image_points[image_points[:,2] >= 0]))
+    # Consider only points in the image
+    filter = (image_points[:, 0] >= 0) & (image_points[:, 0] <= width) & (image_points[:, 1] >= 0) & (image_points[:, 1] <= height)
+    image_points = image_points[filter]
+
+    print("Points from point cloud which belongs to the image:", image_points.shape)
+    print("Labelled points on image:", len(image_points[image_points[:,2] >= 0]))
+
+    # Define DPI (dots per inch)
+    dpi = 100  # Common screen DPI; adjust as needed
+
+    # Compute figure size in inches
+    figsize = (width / dpi, height / dpi)
+
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    ax.imshow(image)
+
+    for label_index, path in enumerate(paths):
+        # Create a Rectangle patch
+        patch = patches.PathPatch(path, linewidth=1, edgecolor=COLORS_ARRAY[label_index % len(COLORS_ARRAY)], facecolor='none')
+        # Add the rectangle to the plot
+        ax.add_patch(patch)
+        # Add text at position (x=50, y=50)
+        #ax.text(path., "{:d}".format(label_index), fontsize=12, color=COLORS_ARRAY[label_index % len(COLORS_ARRAY)], backgroundcolor='white')
+
+    # Hide axes
+    ax.axis("off")
+
+    #plt.show(block=True)
+
+    for point in image_points:
+        label_index = int(point[2])
+        color = 'white' if label_index < 0 else COLORS_ARRAY[label_index % len(COLORS_ARRAY)]
+        size = 1 if label_index < 0 else 4
+        ax.scatter(point[0], point[1], color=color, s=size)
+
+    plt.savefig(os.path.join(OUTPUT_IMAGES_DIR, "{:s}.jpg".format(id)), format='jpg', dpi=200, bbox_inches='tight', pad_inches=0)    
+
+
 # Converts range and azimuth to x,y,z.
 # Here, z in the maximum elevation that potentially can be caught by radar for such range 
 def range_azimuth_to_3d(ra):
@@ -460,19 +618,6 @@ def process_labeled_images():
         points_2d = points_2d.squeeze(1).astype('int')
         print("2D points:", points_2d.shape)
 
-        # Get the image and labels   
-
-        image = cv2.imread(os.path.join(IMAGES_DIR, image_file)) 
-        width = image.shape[1]
-        height = image.shape[0]
-
-        print("Image size:", width, "x", height)
-        labels = read_lables(width, height, id)
-
-        if labels.size == 0:
-            print("No labels found for sample", id)
-            continue
-
         print("Original PC shape:", pc.shape)
 
         # marker for the labels. '-1' means the point does not belong to any label 
@@ -480,15 +625,42 @@ def process_labeled_images():
         pc = np.hstack((pc[:,[0,1,2]], no_labels))
         print("PC shape before labelling: ", pc.shape)
 
-        pc = label_point_cloud(pc, points_2d, labels)  
-        print("Labelled PC shape:", pc.shape)
-        pc = cluster_pc(pc, len(labels), eps=0.2, ingore_z=True)   
-        #pc = cluster_pc_with_region_growing(pc, len(labels), eps=0.2)  
-        print("Clustered PC shape:", pc.shape)
+        # Get the image and labels   
 
-        save_image(image, labels, points_2d, pc[:,3], width, height, id)
-        save_range_azimuth(pc, len(labels), id)
-        show_range_azimuth(pc, len(labels), id)
+        image = cv2.imread(os.path.join(IMAGES_DIR, image_file)) 
+        width = image.shape[1]
+        height = image.shape[0]
+
+        print("Image size:", width, "x", height)
+
+        if USE_POLYGON_LABLES:
+            paths = read_polygon_labels(width, height, id)
+            if len(paths) == 0:
+                print("No polygon labels found for sample", id)
+                continue
+
+            pc = label_point_cloud_for_polygons(pc, points_2d, paths)  
+            print("Labelled PC shape:", pc.shape)
+            save_image_with_polygons(image, paths, points_2d, pc[:,3], width, height, id)
+            save_range_azimuth(pc, len(paths), id)
+            show_range_azimuth(pc, len(paths), id)
+
+        else:
+            labels = read_lables(width, height, id)
+
+            if labels.size == 0:
+                print("No labels found for sample", id)
+                continue
+
+            pc = label_point_cloud(pc, points_2d, labels)  
+            print("Labelled PC shape:", pc.shape)
+            pc = cluster_pc(pc, len(labels), eps=0.2, ingore_z=True)   
+            #pc = cluster_pc_with_region_growing(pc, len(labels), eps=0.2)  
+            print("Clustered PC shape:", pc.shape)
+
+            save_image(image, labels, points_2d, pc[:,3], width, height, id)
+            save_range_azimuth(pc, len(labels), id)
+            show_range_azimuth(pc, len(labels), id)
 
 
 def project_predicted_labels():
@@ -561,6 +733,7 @@ def project_predicted_labels():
 # Main program
 process_labeled_images()    
 #project_predicted_labels() 
+
 
   
     
