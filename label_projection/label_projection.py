@@ -23,27 +23,25 @@ PROJECT_ON_RADAR = False
 RADAR_MAX_ELEVATION_DEGREES = 12
 
 # Whether to use polygon-shaped labels instead of rectangular bounding boxes
-USE_POLYGON_LABLES = False
+USE_POLYGON_LABLES = True
 
 # When set to True, a biggest cluster is taken as a pole when doing clustering.
 # Otherwise, the closest cluster is taken (with the smallest range) after which there is no higher cluster
 USE_BIGGEST_CLUSTER = False
 
-# Minumum height to be considered for the pole detection
-MINIMUM_POLE_HEIGHT = 0.5
-
 # Data location   
-IMAGES_DIR = "/home/danil/RADIalHD/Radial_imagesHD"
-LABELS_DIR = "/home/danil/RADIalHD/Radial_imagesHD_labels"
-POLYGON_LABELS_DIR = "/home/danil/data/testFolder_labels_polygons"
+IMAGES_DIR = "/home/danil/data/RADIal/Ready_to_use/RADIal/RADIalHD/Radial_imagesHD"
+LABELS_DIR = "/home/danil/data/RADIal/Ready_to_use/RADIal/RADIalHD/Radial_imagesHD_labels"
+POLYGON_LABELS_DIR = "/home/danil/data/RADIal/full_dataset_polygon_labels"
 LASER_PCL_DIR = "/home/danil/data/RADIal/laser_PCL"
 RADAR_PCL_DIR = "/home/danil/data/RADIal/radar_PCL"
 PREDICTED_LABELS_DIR = "/home/danil/data/RADIal/predicted_labels"
 OUTPUT_IMAGES_DIR = "/home/danil/data/RADIal/projected_labels"
+OUTPUT_POLYGON_IMAGES_DIR = "/home/danil/data/RADIal/projected_polygon_labels"
 OUTPUT_LABELS_DIR = "/home/danil/data/RADIal/labelled_range_azimuth"
 
 
-COLORS_ARRAY = np.array(['pink', 'red', 'green', 'blue', 'purple', 'orange'])
+COLORS_ARRAY = np.array(['magenta', 'red', 'green', 'blue', 'orange', 'yellow', 'cyan', 'olive'])
 
 def belongs_to_polygon(polygon: np.array, point):
     return Path(polygon).contains_point(point)
@@ -95,9 +93,9 @@ def cluster_pc(pc, num_labels, eps = 0.2, ingore_z = False):
         if ingore_z:
             points_2d = labelled_points[:,[0,1]]
             print("Points 2D:", points_2d.shape)
-            clustering = DBSCAN(eps=eps, min_samples=2).fit(points_2d)
+            clustering = DBSCAN(eps=eps, min_samples=1).fit(points_2d)
         else:    
-            clustering = DBSCAN(eps=eps, min_samples=2).fit(labelled_points)
+            clustering = DBSCAN(eps=eps, min_samples=1).fit(labelled_points)
         cluster_labels = clustering.labels_
         
         print("Labels:", cluster_labels.shape)
@@ -164,7 +162,7 @@ def cluster_pc(pc, num_labels, eps = 0.2, ingore_z = False):
             for i, r in enumerate(cluster_average_ranges):
                 h = cluster_heights[i]
                 s = cluster_sizes[i]
-                w = (h*s)/r
+                w = h*s/r
                 if r == min_range:
                     closest_cluster_index = i
                 if h == max_height:
@@ -322,14 +320,22 @@ def read_lables(width, height, id):
     return np.array(labels)    
 
 def read_polygon_labels(width, height, id):
+    #print(id)
     filename = os.path.join(POLYGON_LABELS_DIR, "image_{:s}.txt".format(id))  
     labels_data = np.genfromtxt(filename, dtype=object, delimiter="\n")
-    labels = [list(map(float, row.split()[1:])) for row in labels_data]    
+    if len(labels_data.shape) == 0:
+        labels_data = np.atleast_1d(labels_data)      
+    labels = [list(map(float, row.split()[1:])) for row in labels_data]  
 
     # Convert labels from normalized to pixels
     for i, label in enumerate(labels):
         for j, point in enumerate(label):
-            labels[i][j] = point * width if i%2 == 0 else point * height
+            labels[i][j] = point * width if j%2 == 0 else point * height
+
+    # Add one point to the end to make polygon closed
+    for label in labels:
+        label.append(label[0])
+        label.append(label[1])        
 
     # Convert each row into a list of (x, y) points
     polygons = [np.array(row).reshape(-1, 2) for row in labels if len(row) % 2 == 0]
@@ -380,37 +386,36 @@ def show_range_azimuth(pc, num_labels, id):
 
     print("Maximum range for a labelled point =", max_range)
 
-    filter = ra[:,0] < max_range
+    filter = ra[:,0] <= 100#max_range
     ra = ra[filter]
 
     print("Filtered Range-Azimuth", ra.shape)
 
-    az = ra[:,1]
-    r = ra[:,0]
-
     # Visualize the point cloud in a polar plot
   
     fig, ax = plt.subplots(figsize=(20, 20), subplot_kw={'projection': 'polar'})
-
-    # Shift marker values [-1, len(labels)) 1 position to the right to have an array of values [0, len(labels) + 1)
-    colors = ra[:,2].astype(int) + 1
-    colormap = []
-    colormap.append('black')
-    for i in range(0, num_labels):
-        colormap.append(COLORS_ARRAY[i % len(COLORS_ARRAY)])
-    colormap = np.array(colormap)  
-
-    # Create array of sizes, labelled points are bigger
-    sizes = np.where(ra[:,2] == -1, 1, 5)
-
     ax.set_thetamax(180)  
     ax.set_thetamin(0)
-    
-    ax.scatter(az, r, c=colormap[colors], s=sizes)
+
+    # Draw unlabelled polints
+    unlabeled_points = ra[ra[:,2] == -1]
+    #ax.scatter(unlabeled_points[:,1], unlabeled_points[:,0], c='black', s=1, alpha=0.3, zorder=1)
+
+    # Draw lebelled points
+    labeled_points = ra[ra[:,2] != -1]
+    colors = labeled_points[:,2].astype(int) 
+    colormap = []
+    for i in range(0, num_labels):
+        colormap.append(COLORS_ARRAY[i % len(COLORS_ARRAY)])
+    colormap = np.array(colormap) 
+    ax.scatter(labeled_points[:,1], labeled_points[:,0], c=colormap[colors], s=15, alpha=1.0, zorder=2)
+        
+        
 
     # Plot the selected region as a red mark
     plt.title("Sample {:s}".format(id))
-    plt.show()   
+    #plt.show()   
+    plt.savefig(os.path.join(OUTPUT_IMAGES_DIR, "bird_side_view_{:s}.jpg".format(id)), format='jpg', dpi=200, bbox_inches='tight', pad_inches=0)  
 
 def show_predicted_range_azimuth(ra, id):
 
@@ -428,7 +433,7 @@ def show_predicted_range_azimuth(ra, id):
 
     # Plot the selected region as a red mark
     plt.title("Sample {:s}".format(id))
-    plt.show()     
+    plt.show()   
 
 def save_range_azimuth(pc, num_labels, id):
     f = open(os.path.join(OUTPUT_LABELS_DIR, "{:s}.txt".format(id)), "w")
@@ -473,7 +478,7 @@ def save_image(image, labels, points_2d, markers, width, height, id):
         # Add the rectangle to the plot
         ax.add_patch(rect)
 
-        # Add text at position (x=50, y=50)
+        # Add text 
         ax.text(label[0], label[1], "{:d}".format(label_index), fontsize=12, color=COLORS_ARRAY[label_index % len(COLORS_ARRAY)], backgroundcolor='white')
 
     # Hide axes
@@ -517,8 +522,12 @@ def save_image_with_polygons(image, paths, points_2d, markers, width, height, id
         patch = patches.PathPatch(path, linewidth=1, edgecolor=COLORS_ARRAY[label_index % len(COLORS_ARRAY)], facecolor='none')
         # Add the rectangle to the plot
         ax.add_patch(patch)
+        text_label_vertex = [width, height]
+        for v in path.vertices:
+            if v[1] < text_label_vertex[1]:
+                text_label_vertex = v
         # Add text at position (x=50, y=50)
-        #ax.text(path., "{:d}".format(label_index), fontsize=12, color=COLORS_ARRAY[label_index % len(COLORS_ARRAY)], backgroundcolor='white')
+        ax.text(text_label_vertex[0], text_label_vertex[1], "{:d}".format(label_index), fontsize=12, color=COLORS_ARRAY[label_index % len(COLORS_ARRAY)], backgroundcolor='white')
 
     # Hide axes
     ax.axis("off")
@@ -531,7 +540,7 @@ def save_image_with_polygons(image, paths, points_2d, markers, width, height, id
         size = 1 if label_index < 0 else 4
         ax.scatter(point[0], point[1], color=color, s=size)
 
-    plt.savefig(os.path.join(OUTPUT_IMAGES_DIR, "{:s}.jpg".format(id)), format='jpg', dpi=200, bbox_inches='tight', pad_inches=0)    
+    plt.savefig(os.path.join(OUTPUT_POLYGON_IMAGES_DIR, "{:s}.jpg".format(id)), format='jpg', dpi=200, bbox_inches='tight', pad_inches=0)    
 
 
 # Converts range and azimuth to x,y,z.
@@ -563,6 +572,32 @@ def compensate_layer_angle(pcl, index, sensor_height):
     
     return pcl
 
+def show_3d(labeled_pc):
+    pc_3d = labeled_pc[:,0:3]    
+    labels = labeled_pc[:,3]
+
+    colors = np.zeros((len(labels), 3))  # Initialize color array
+    colors[labels == -1] = [0.6, 0.6, 0.6]
+    colors[labels != -1] = [0, 0.5, 0]
+
+
+    # Compute Euclidean distance from the origin (0,0,0)
+    #distances = np.linalg.norm(pc_3d, axis=1)  # sqrt(x^2 + y^2 + z^2)
+
+    # Normalize distances to range [0,1] for colormap
+    #distances_norm = (distances - distances.min()) / (distances.max() - distances.min())
+
+    # Use a colormap to assign colors (Red for close, Purple for far)
+    #colormap = plt.get_cmap("coolwarm_r") 
+    #colors = colormap(distances_norm)[:, :3]  # Extract RGB colors
+
+    print("PC 3D: ", pc_3d.shape)
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(pc_3d)
+    pcd.colors = o3d.utility.Vector3dVector(colors) 
+    #o3d.io.write_point_cloud("/home/danil/output.pcd", pcd)
+    o3d.visualization.draw_geometries([pcd])    
+
 def process_labeled_images():
     image_files = []
     label_files = []
@@ -580,11 +615,16 @@ def process_labeled_images():
     for image_file in image_files:
         id = re.search("\d+", image_file).group()
 
-        if id != "000863":
-            continue
+        # if (os.path.exists(os.path.join(OUTPUT_LABELS_DIR, "{:s}.txt".format(id)))):
+        #     continue
+
+        # if id != "000347" and id != "000584"  and id != "000680"  and id != "000754" and id != "000833" and id != "000863" and id != "000873"  and id != "000964"  and id != "001275"  and id != "001692"  and id != "001693"  and id != "001837" and id != "002004" and id != "002745" and id != "003164":
+        #    continue
+
+        # if id != "000937":
+        #     continue
 
         pc = get_sample_pc(id)
-        print("PC point:", pc[0,:])
         if len(pc) == 0:
             print("Could not extract PC for sample", id)
             continue
@@ -607,7 +647,6 @@ def process_labeled_images():
             pc[:,[0, 1, 2]] = pc[:,[1, 0,2]] # Swap the order
             pc[:,0]*=-1 # Left is positive           
         
-        print("PC point:", pc[0,:])
         # Get 2D points from the point cloud to project onto the image
         points_2d,_ = cv2.projectPoints(np.array(pc), 
                                         CAMERA_TO_LIDAR_ROTATION, 
@@ -641,9 +680,12 @@ def process_labeled_images():
 
             pc = label_point_cloud_for_polygons(pc, points_2d, paths)  
             print("Labelled PC shape:", pc.shape)
-            save_image_with_polygons(image, paths, points_2d, pc[:,3], width, height, id)
+            pc = cluster_pc(pc, len(paths), eps=0.2, ingore_z=True)  
+            print("Clustered PC shape:", pc.shape) 
+            #save_image_with_polygons(image, paths, points_2d, pc[:,3], width, height, id)
             save_range_azimuth(pc, len(paths), id)
-            show_range_azimuth(pc, len(paths), id)
+            #show_range_azimuth(pc, len(paths), id)
+            #show_3d(pc)
 
         else:
             labels = read_lables(width, height, id)
@@ -659,8 +701,9 @@ def process_labeled_images():
             print("Clustered PC shape:", pc.shape)
 
             save_image(image, labels, points_2d, pc[:,3], width, height, id)
-            save_range_azimuth(pc, len(labels), id)
+            #save_range_azimuth(pc, len(labels), id)
             show_range_azimuth(pc, len(labels), id)
+            #show_3d(pc)
 
 
 def project_predicted_labels():
