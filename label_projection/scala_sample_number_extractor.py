@@ -17,7 +17,7 @@ result = pd.DataFrame(columns=['sample_id', 'scala_sample_id'])
 for dataset in datasets:
     db: SyncReader
     try:
-        db = SyncReader(os.path.join(RAW_SEQUENCES_DIR, dataset), tolerance=20000)
+        db = SyncReader(os.path.join(RAW_SEQUENCES_DIR, dataset), tolerance=20000, silent=True)
     except FileNotFoundError:
         print("Dataset", dataset, "is not found")
         continue

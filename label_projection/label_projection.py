@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.path import Path
+import csv
 import os
 import numpy as np
 import cv2
@@ -36,6 +37,7 @@ POLYGON_LABELS_DIR = "/home/danil/data/RADIal/full_dataset_polygon_labels"
 LASER_PCL_DIR = "/home/danil/data/RADIal/laser_PCL"
 RADAR_PCL_DIR = "/home/danil/data/RADIal/radar_PCL"
 PREDICTED_LABELS_DIR = "/home/danil/data/RADIal/predicted_labels"
+SCALA_SAMPLE_NUMBERS_FILE = "/home/danil/data/RADIal/scala_sample_numbers/data.txt"
 OUTPUT_IMAGES_DIR = "/home/danil/data/RADIal/projected_labels"
 OUTPUT_POLYGON_IMAGES_DIR = "/home/danil/data/RADIal/projected_polygon_labels"
 OUTPUT_LABELS_DIR = "/home/danil/data/RADIal/labelled_range_azimuth"
@@ -612,6 +614,10 @@ def process_labeled_images():
         break
     print("Found", len(label_files), "labels")
 
+    with open(SCALA_SAMPLE_NUMBERS_FILE, mode='r', newline='') as file:
+        reader = csv.reader(file)
+        scala_samples = {int(rows[0]): int(rows[1]) for rows in reader}
+
     for image_file in image_files:
         id = re.search("\d+", image_file).group()
 
@@ -621,7 +627,7 @@ def process_labeled_images():
         # if id != "000347" and id != "000584"  and id != "000680"  and id != "000754" and id != "000833" and id != "000863" and id != "000873"  and id != "000964"  and id != "001275"  and id != "001692"  and id != "001693"  and id != "001837" and id != "002004" and id != "002745" and id != "003164":
         #    continue
 
-        # if id != "000937":
+        # if id != "000346":
         #     continue
 
         pc = get_sample_pc(id)
@@ -640,8 +646,13 @@ def process_labeled_images():
             pc = np.stack([x,y,z],axis=1)
 
         else:      
-            # Keep only x,y,z
-            pc = compensate_layer_angle(pc, 0, 0.42)[:,:3]
+            
+            try:
+                scala_sample_index = scala_samples[int(id)] 
+            except KeyError:
+                print("No scala sample number for sample ID", id)
+                scala_sample_index = 0
+            pc = compensate_layer_angle(pc, scala_sample_index, 0.42)[:,:3]
             
             # Transform lidar PC from the RADIal sane way as they do
             pc[:,[0, 1, 2]] = pc[:,[1, 0,2]] # Swap the order
